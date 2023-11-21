@@ -5,6 +5,7 @@ members = [
   "anyrun-macros",
   "anyrun-interface",
   "plugins/applications",
+  "plugins/hyprland-window",
   "plugins/symbols",
   "plugins/rink",
   "plugins/shell",
