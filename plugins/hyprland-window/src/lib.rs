@@ -1,9 +1,12 @@
 use abi_stable::std_types::{ROption, RString, RVec};
 use anyrun_plugin::*;
 use fuzzy_matcher::FuzzyMatcher;
+use icon::get_icon;
 use serde_json;
 use serde::Deserialize;
 use std::{fs, process::Command};
+
+mod icon;
 
 struct Context {
     config: Config,
@@ -28,21 +31,15 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            max_entries: 3,
+            max_entries: 10,
             score_threshold: 50,
         }
     }
 }
 
 #[derive(Deserialize)]
-struct HyprlandClientWorkspace {
-    id: i32,
-}
-
-#[derive(Deserialize)]
 struct HyprlandClient {
     address: String,
-    workspace: HyprlandClientWorkspace,
     class: String,
     title: String,
 }
@@ -136,13 +133,17 @@ fn get_matches(input: RString, ctx: &mut Context) -> RVec<Match> {
     entries.sort_by(|a, b| b.2.cmp(&a.2));
     entries.truncate(ctx.config.max_entries);
 
+    for (entry, _, _) in &mut entries {
+        let _ = get_icon(entry.class.as_str());
+    }
+
     entries
         .into_iter()
         .map(|(client, id, _)| Match {
             title: client.title.clone().into(),
             description: ROption::RNone,
             use_pango: false,
-            icon: ROption::RSome(client.class.clone().into()),
+            icon: ROption::RSome(RString::from(get_icon(client.class.as_str()))),
             id: ROption::RSome(id),
         })
         .collect()
