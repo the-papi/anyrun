@@ -1,23 +1,25 @@
 use abi_stable::std_types::{ROption, RString, RVec};
 use anyrun_plugin::*;
 use fuzzy_matcher::FuzzyMatcher;
-use icon::get_icon;
+use scrubber::DesktopEntry;
 use serde_json;
 use serde::Deserialize;
 use std::{fs, process::Command};
 
-mod icon;
+mod scrubber;
 
 struct Context {
     config: Config,
-    hyprland_clients: Vec<(HyprlandClient, u64)>
+    hyprland_clients: Vec<(HyprlandClient, u64)>,
+    desktop_entries: Vec<(DesktopEntry, u64)>,
 }
 
 impl Context {
     fn empty() -> Context {
         Context {
             config: Config::default(),
-            hyprland_clients: vec![]
+            hyprland_clients: vec![],
+            desktop_entries: vec![],
         }
     }
 }
@@ -31,7 +33,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            max_entries: 10,
+            max_entries: 3,
             score_threshold: 50,
         }
     }
@@ -42,6 +44,7 @@ struct HyprlandClient {
     address: String,
     class: String,
     title: String,
+    pid: i32,
 }
 
 fn load_config(config_dir: RString) -> Config {
@@ -68,6 +71,10 @@ fn parse_json_data(json_str: &str) -> Vec<HyprlandClient> {
 #[init]
 fn init(config_dir: RString) -> Context {
     let config = load_config(config_dir);
+    let desktop_entries = scrubber::scrubber().unwrap_or_else(|why| {
+        eprintln!("Failed to load desktop entries: {}", why);
+        Vec::new()
+    });
     let output = Command::new("hyprctl").arg("clients").arg("-j").output();
     match output {
         Ok(output) => {
@@ -81,6 +88,7 @@ fn init(config_dir: RString) -> Context {
                             .enumerate()
                             .map(|(i, entry)| (entry, i as u64))
                             .collect(),
+                        desktop_entries: desktop_entries,
                     },
                     Err(_) => Context::empty(),
                 }
@@ -100,8 +108,40 @@ fn info() -> PluginInfo {
     }
 }
 
+fn find_icon(class: &String, pid: u32, ctx: &Context) -> String {
+    // Try to find icon by class == startup_wm_class
+    for (entry, _) in &ctx.desktop_entries {
+        match &entry.startup_wm_class {
+            Some(startup_wm_class) => {
+                if startup_wm_class == class {
+                    return entry.icon.clone();
+                }
+            }
+            _ => {}
+        };
+    }
+
+    // Try to find icon by class in name field
+    for (entry, _) in &ctx.desktop_entries {
+        if entry.name.to_lowercase().contains(&class.to_lowercase()) {
+            return entry.icon.clone();
+        }
+    }
+
+    // Try to find icon by process name
+    let process = psutil::process::Process::new(pid).unwrap();
+    let process_name = process.name().unwrap_or("".into());
+    for (entry, _) in &ctx.desktop_entries {
+        if entry.exec.contains(&process_name) {
+            return entry.icon.clone();
+        }
+    }
+
+    class.to_string() // return class as icon name if no icon found -> it may also be a valid icon name
+}
+
 #[get_matches]
-fn get_matches(input: RString, ctx: &mut Context) -> RVec<Match> {
+fn get_matches(input: RString, ctx: &Context) -> RVec<Match> {
     let matcher = fuzzy_matcher::skim::SkimMatcherV2::default().smart_case();
 
     let mut entries = ctx
@@ -133,17 +173,13 @@ fn get_matches(input: RString, ctx: &mut Context) -> RVec<Match> {
     entries.sort_by(|a, b| b.2.cmp(&a.2));
     entries.truncate(ctx.config.max_entries);
 
-    for (entry, _, _) in &mut entries {
-        let _ = get_icon(entry.class.as_str());
-    }
-
     entries
         .into_iter()
         .map(|(client, id, _)| Match {
             title: client.title.clone().into(),
             description: ROption::RNone,
             use_pango: false,
-            icon: ROption::RSome(RString::from(get_icon(client.class.as_str()))),
+            icon: ROption::RSome(RString::from(find_icon(&client.class, client.pid as u32, ctx))),
             id: ROption::RSome(id),
         })
         .collect()
